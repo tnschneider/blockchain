@@ -21,34 +21,60 @@ namespace Blockchain.Web.Controllers
         }
 
         [HttpGet("mine")]
-        public IActionResult Mine()
+        public async Task<IActionResult> Mine()
         {
-            var proof = _blockchain.ProofOfWork(_blockchain.LastBlock.Proof);
-            _blockchain.AddTransaction(new Transaction {
+            var proof = await _blockchain.ProofOfWorkAsync(_blockchain.LastBlock.Proof);
+            
+            await _blockchain.AddTransactionAsync(new Transaction {
                 Sender = "0",
                 Recipient = _settings.NodeIdentifier,
                 Amount = 1
             });
 
-            var block = _blockchain.AddBlock(proof, Blockchain.HashBlock(_blockchain.LastBlock));
+            var block = await _blockchain.AddBlockAsync(proof, Blockchain.HashBlock(_blockchain.LastBlock));
 
             return Ok(block);
         }
 
         [HttpPost("transactions/new")]
-        public IActionResult NewTransaction([FromBody] Transaction transaction) => Ok(_blockchain.AddTransaction(transaction));
+        public async Task<IActionResult> NewTransaction([FromBody] Transaction transaction) => 
+            Ok(await _blockchain.AddTransactionAsync(transaction));
 
         [HttpGet("chain")]
         public IActionResult Chain()
         {
             var chain = _blockchain.FullChain;
 
-            var response = new {
+            var response = new ChainResponse {
                  Chain = chain,
                  Length = chain.Count
             };
 
             return Ok(response);
+        }
+
+        [HttpPost("nodes/register")]
+        public async Task<IActionResult> RegisterNodes([FromBody] IEnumerable<Node> nodes)
+        {
+            if (nodes == null) return BadRequest();
+
+            var tasks = nodes.Select(x => _blockchain.RegisterNodeAsync(x.Address));
+            
+            await Task.WhenAll(tasks);
+
+            return Ok();
+        }
+
+        [HttpGet("nodes/resolve")]
+        public async Task<IActionResult> Resolve()
+        {
+            var replaced = await _blockchain.ResolveConflictsAsync();
+
+            return Ok(new ResolveResponse 
+                {
+                    Chain = _blockchain.FullChain,
+                    ChainWasAuthoritative = !replaced
+                });
         }
     }
 }

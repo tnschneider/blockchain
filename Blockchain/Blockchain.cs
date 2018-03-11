@@ -3,24 +3,69 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Net.Http;
 using Newtonsoft.Json;
 using Blockchain.Models;
+using System.Threading.Tasks;
 
 namespace Blockchain
 {
     public class Blockchain 
     {
-        private List<Block> _chain {get;set;} = new List<Block>();
+        private List<Block> _chain = new List<Block>();
+        private List<Transaction> _currentTransactions = new List<Transaction>();
+        private HashSet<Node> _nodes = new HashSet<Node>();
+        private HttpClient _client = new HttpClient();
 
-        private List<Transaction> _currentTransactions {get;set;} = new List<Transaction>();
-
-        public Blockchain() => AddBlock(100, "1");
+        public Blockchain() 
+        {
+            AddBlockAsync(100, "1").Wait();
+        }
 
         public Block LastBlock => _chain.Last();
 
         public List<Block> FullChain => _chain;
 
-        public Block AddBlock(long proof, string previousHash = null)
+        public Task RegisterNodeAsync(string address)
+        {
+            _nodes.Add(new Node { Address = address });
+
+            return Task.CompletedTask;
+        }
+
+        public async Task<bool> ResolveConflictsAsync()
+        {
+            IEnumerable<Block> newChain = null;
+
+            long maxLen = _chain.Count;
+
+            foreach (var node in _nodes)
+            {
+                var resp = await _client.GetAsync(new Uri(new Uri(node.Address), "/api/blockchain/chain"));
+
+                if (resp.IsSuccessStatusCode)
+                {
+                    var model = JsonConvert.DeserializeObject<ChainResponse>(await resp.Content.ReadAsStringAsync());
+
+                    if (model != null && model.Length > maxLen && IsValidChain(model.Chain))
+                    {
+                        maxLen = model.Length;
+                        newChain = model.Chain;
+                    }
+                }
+
+                if (newChain != null)
+                {
+                    _chain = newChain.ToList();
+                    return true;
+                }
+            }
+
+            return false;
+            
+        }
+
+        public Task<Block> AddBlockAsync(long proof, string previousHash = null)
         {
             var block = new Block {
                 Index = _chain.Count + 1,
@@ -34,34 +79,54 @@ namespace Blockchain
 
             _currentTransactions.Clear();
 
-            return block;
+            return Task.FromResult(block);
         }
 
-        public long AddTransaction(Transaction transaction)
+        public Task<long> AddTransactionAsync(Transaction transaction)
         {
             _currentTransactions.Add(transaction);
 
-            return LastBlock.Index + 1;
+            return Task.FromResult(LastBlock.Index + 1);
         }
 
-        public long ProofOfWork(long lastProof)
+        public Task<long> ProofOfWorkAsync(long lastProof)
         {
             long proof = 0;
             while (!IsValidProof(lastProof, proof))
             {
                 proof++;
             }
-            return proof;
+            return Task.FromResult(proof);
         }
 
-        public static bool IsValidProof(long lastProof, long proof) 
+        public static string HashBlock(Block block) => GetSHA256Hash(block);
+
+        private static bool IsValidChain(IEnumerable<Block> chain) 
+        {
+            var chainArr = chain.ToArray();
+            
+            var index = 0;
+            var lastBlock = chainArr[index];
+
+            while (++index < chainArr.Length)
+            {
+                var block = chainArr[index];
+                
+                if (block.PreviousHash != HashBlock(lastBlock)) return false;
+
+                if (!IsValidProof(lastBlock.Proof, block.Proof)) return false;
+
+                lastBlock = block;
+            }
+
+            return true;
+        }
+
+        private static bool IsValidProof(long lastProof, long proof) 
         {
             var guess = GetSHA256Hash($"{lastProof}{proof}");
             return guess.Substring(guess.Length - 4, 4) == "0000";
-        } 
-            
-
-        public static string HashBlock(Block block) => GetSHA256Hash(block);
+        }
 
         private static string GetSHA256Hash(object value) => 
             GetSHA256Hash(JsonConvert.SerializeObject(value));
